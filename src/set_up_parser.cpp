@@ -104,6 +104,10 @@ void set_up_parser(sharg::parser & parser, configuration & config)
             .advanced = true});
 
     parser.add_option(
+        config.hibf_config.empty_bin_fraction,
+        sharg::config{.short_id = '\0', .long_id = "empty-bin-fraction", .description = "Todo :)", .advanced = true});
+
+    parser.add_option(
         config.hibf_config.number_of_hash_functions,
         sharg::config{.short_id = '\0',
                       .long_id = "hash",
