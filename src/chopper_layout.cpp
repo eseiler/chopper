@@ -101,7 +101,7 @@ int chopper_layout(chopper::configuration & config, sharg::parser & parser)
         chopper::input_functor{filenames, config.precomputed_files, config.k, config.window_size};
     config.hibf_config.number_of_user_bins = filenames.size();
     config.hibf_config.validate_and_set_defaults();
-    config.hibf_config_was_validated = true;
+    // config.hibf_config.validated = true;
 
     if (!input_is_a_sketch_file)
     {
