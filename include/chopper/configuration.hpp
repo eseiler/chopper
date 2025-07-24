@@ -20,7 +20,10 @@
 namespace chopper
 {
 
-enum partitioning_scheme
+// uint8_t because it's 1 byte. Default is int (2 bytes).
+// Without `class`, the entries are available at the parent scope, i.e.,
+// both `chopper::blocked` and `chopper::partitioning_scheme::blocked` are valid
+enum class partitioning_scheme : uint8_t
 {
     blocked,       // 0
     sorted,        // 1
@@ -33,7 +36,8 @@ enum partitioning_scheme
 
 struct configuration
 {
-    int partitioning_approach{};
+    partitioning_scheme partitioning_approach{};
+    size_t number_of_partitions{};
     /*!\name General Configuration
      * \{
      */

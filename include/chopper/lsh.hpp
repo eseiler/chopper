@@ -36,17 +36,11 @@ public:
     Cluster & operator=(Cluster &&) = default;
     ~Cluster() = default;
 
-    Cluster(size_t const id)
-    {
-        representative_id = id;
-        user_bins = {id};
-    }
+    Cluster(size_t const id, size_t const user_bins_id) : representative_id{id}, user_bins({user_bins_id})
+    {}
 
-    Cluster(size_t const id, size_t const user_bins_id)
-    {
-        representative_id = id;
-        user_bins = {user_bins_id};
-    }
+    Cluster(size_t const id) : Cluster{id, id}
+    {}
 
     size_t id() const
     {
@@ -76,9 +70,12 @@ public:
     bool is_valid(size_t id) const
     {
         bool const ids_equal = representative_id == id;
-        bool const properly_moved = has_been_moved() && empty() && moved_id.has_value();
+        // has_been_moved() == moved_id.has_value()
+        bool const properly_moved = has_been_moved() && empty();
+        // not_moved == !properly_moved ?
         bool const not_moved = !has_been_moved() && !empty();
 
+        // properly_moved || not_moved == !(has_been_moved() ^ empty())
         return ids_equal && (properly_moved || not_moved);
     }
 
@@ -92,22 +89,25 @@ public:
     void move_to(Cluster & target_cluster)
     {
         target_cluster.user_bins.insert(target_cluster.user_bins.end(), this->user_bins.begin(), this->user_bins.end());
+        // If there are many clusteres that are moved often and actually amount to a noticeable ram usage, consider
+        // deallocation (`this->user_bins = std::vector<size_t>{};`)
         this->user_bins.clear();
         moved_id = target_cluster.id();
     }
 
     void sort_by_cardinality(std::vector<size_t> const & cardinalities)
     {
-        std::sort(user_bins.begin(),
-                  user_bins.end(),
-                  [&cardinalities](auto const & v1, auto const & v2)
-                  {
-                      return cardinalities[v2] < cardinalities[v1];
-                  });
+        // No need for stable sort?
+        std::ranges::sort(user_bins,
+                          [&cardinalities](auto const & v1, auto const & v2)
+                          {
+                              return cardinalities[v1] > cardinalities[v2];
+                          });
     }
 };
 
-struct MultiCluster : Cluster
+// Does it help to inherit if you need to re-define most members anyway?
+struct MultiCluster : public Cluster
 {
 protected:
     std::vector<std::vector<size_t>> user_bins{}; // the user bins contained in this cluster
@@ -120,17 +120,16 @@ public:
     MultiCluster & operator=(MultiCluster &&) = default;
     ~MultiCluster() = default;
 
-    MultiCluster(Cluster const & clust)
+    // Does adding a cluster to a multi cluster consume the cluster?
+    // If so, we could perhaps avoid some copies.
+    MultiCluster(Cluster const & cluster)
     {
-        representative_id = clust.id();
-        if (clust.has_been_moved())
-        {
-            moved_id = clust.moved_to_cluster_id();
-        }
+        representative_id = cluster.id();
+
+        if (cluster.has_been_moved())
+            moved_id = cluster.moved_to_cluster_id();
         else
-        {
-            user_bins.push_back(clust.contained_user_bins());
-        }
+            user_bins.push_back(cluster.contained_user_bins());
     }
 
     std::vector<std::vector<size_t>> const & contained_user_bins() const
@@ -152,6 +151,7 @@ public:
 
     bool is_valid(size_t id) const
     {
+        // Same as Cluster::is_valid
         bool const ids_equal = representative_id == id;
         bool const properly_moved = has_been_moved() && empty() && moved_id.has_value();
         bool const not_moved = !has_been_moved() && !empty();
@@ -161,6 +161,7 @@ public:
 
     void move_to(MultiCluster & target_cluster)
     {
+        // Same as Cluster::move_to
         target_cluster.user_bins.insert(target_cluster.user_bins.end(), this->user_bins.begin(), this->user_bins.end());
         this->user_bins.clear();
         moved_id = target_cluster.id();
@@ -169,29 +170,59 @@ public:
     // sort user bins within a Cluster by cardinality and the clusters themselves by size
     void sort_by_cardinality(std::vector<size_t> const & cardinalities)
     {
-        auto cmp = [&cardinalities](auto const & v1, auto const & v2)
+        auto cmp_user_bins = [&cardinalities](auto const & v1, auto const & v2)
         {
-            return cardinalities[v2] < cardinalities[v1];
+            return cardinalities[v1] > cardinalities[v2];
         };
         for (auto & user_bin_cluster : user_bins)
-            std::sort(user_bin_cluster.begin(), user_bin_cluster.end(), cmp);
+            std::ranges::sort(user_bin_cluster, cmp_user_bins);
 
         auto cmp_clusters = [](auto const & c1, auto const & c2)
         {
-            return c2.size() < c1.size();
+            return c1.size() > c2.size();
         };
-        std::sort(user_bins.begin(), user_bins.end(), cmp_clusters);
+        std::ranges::sort(user_bins, cmp_clusters);
+    }
+
+    // alternative
+    void sort_by_cardinality2(std::vector<size_t> const & cardinalities)
+    {
+        for (auto & user_bin_cluster : user_bins)
+            std::ranges::sort(user_bin_cluster,
+                              [&cardinalities](auto const & v1, auto const & v2)
+                              {
+                                  return cardinalities[v1] > cardinalities[v2];
+                              });
+        // ^^^ or vvv
+        std::ranges::for_each(user_bins,
+                              [&cardinalities](auto & user_bin_cluster)
+                              {
+                                  std::ranges::sort(user_bin_cluster,
+                                                    [&cardinalities](auto const & v1, auto const & v2)
+                                                    {
+                                                        return cardinalities[v1] > cardinalities[v2];
+                                                    });
+                              });
+
+        std::ranges::sort(user_bins,
+                          [](auto const & c1, auto const & c2)
+                          {
+                              return c1.size() > c2.size();
+                          });
     }
 };
 
 // A valid cluster is one that hasn't been moved but actually contains user bins
+// What's for Cluster and what's for MultiCluster?
 // A valid cluster at position i is identified by the following equality: cluster[i].size() >= 1 && cluster[i][0] == i
 // A moved cluster is one that has been joined and thereby moved to another cluster
+// What's for Cluster and what's for MultiCluster?
 // A moved cluster i is identified by the following: cluster[i].size() == 1 && cluster[i][0] != i
 // returns position of the representative cluster
 template <typename cluster_type>
 size_t LSH_find_representative_cluster(std::vector<cluster_type> const & clusters, size_t current_id)
 {
+    // Alt: `auto representative = std::cref(clusters[current_id])`
     std::reference_wrapper<cluster_type const> representative = clusters[current_id];
 
     assert(representative.get().is_valid(current_id));
@@ -201,6 +232,23 @@ size_t LSH_find_representative_cluster(std::vector<cluster_type> const & cluster
         current_id = representative.get().moved_to_cluster_id();
         representative = clusters[current_id]; // replace by next cluster
         assert(representative.get().is_valid(current_id));
+    }
+
+    return current_id;
+}
+
+template <typename cluster_type>
+size_t LSH_find_representative_cluster2(std::vector<cluster_type> const & clusters, size_t current_id)
+{
+    cluster_type const * representative = clusters[current_id];
+
+    assert(representative->is_valid(current_id));
+
+    while (representative->has_been_moved())
+    {
+        current_id = representative->moved_to_cluster_id();
+        representative = clusters[current_id]; // replace by next cluster
+        assert(representative->is_valid(current_id));
     }
 
     return current_id;

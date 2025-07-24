@@ -46,23 +46,31 @@ namespace chopper::layout
 
 uint64_t lsh_hash_the_sketch(std::vector<uint64_t> const & sketch, size_t const number_of_hashes_to_consider)
 {
-    // lets just compute the sum
-    uint64_t sum{0};
-
-    for (size_t i = 0; i < number_of_hashes_to_consider; ++i)
-        sum += sketch[i];
-
-    return sum;
+    return std::reduce(sketch.begin(), sketch.begin() + number_of_hashes_to_consider);
 }
 
-auto LSH_fill_hashtable(std::vector<Cluster> const & clusters,
+// Maybe in/out param for the table?
+template <typename cluster_type>
+auto LSH_fill_hashtable(std::vector<cluster_type> const & clusters,
                         std::vector<seqan::hibf::sketch::minhashes> const & minHash_sketches,
                         size_t const current_sketch_index,
                         size_t const current_number_of_sketch_hashes)
 {
+    static constexpr bool is_multi_cluster = std::same_as<cluster_type, MultiCluster>;
+    static_assert(std::same_as<cluster_type, Cluster> || std::same_as<cluster_type, MultiCluster>);
+
     robin_hood::unordered_flat_map<uint64_t, std::vector<size_t>> table;
 
-    size_t processed_user_bins{0}; // only for sanity check
+    [[maybe_unused]] size_t processed_user_bins{0}; // only for sanity check
+
+    auto get_user_bin_idx = [](cluster_type const & cluster)
+    {
+        if constexpr (is_multi_cluster)
+            return std::views::join(cluster.contained_user_bins());
+        else
+            return cluster.contained_user_bins();
+    };
+
     for (size_t pos = 0; pos < clusters.size(); ++pos)
     {
         auto const & current = clusters[pos];
@@ -71,44 +79,12 @@ auto LSH_fill_hashtable(std::vector<Cluster> const & clusters,
         if (current.has_been_moved()) // cluster has been moved somewhere else, don't process
             continue;
 
-        for (size_t const user_bin_idx : current.contained_user_bins())
+        for (size_t const user_bin_idx : get_user_bin_idx(current))
         {
             ++processed_user_bins;
             uint64_t const key = lsh_hash_the_sketch(minHash_sketches[user_bin_idx].table[current_sketch_index],
                                                      current_number_of_sketch_hashes);
             table[key].push_back(current.id()); // insert representative for all user bins
-        }
-    }
-    assert(processed_user_bins == clusters.size()); // all user bins should've been processed by one of the clusters
-
-    return table;
-}
-
-auto LSH_fill_hashtable(std::vector<MultiCluster> const & clusters,
-                        std::vector<seqan::hibf::sketch::minhashes> const & minHash_sketches,
-                        size_t const current_sketch_index,
-                        size_t const current_number_of_sketch_hashes)
-{
-    robin_hood::unordered_flat_map<uint64_t, std::vector<size_t>> table;
-
-    size_t processed_user_bins{0}; // only for sanity check
-    for (size_t pos = 0; pos < clusters.size(); ++pos)
-    {
-        auto const & current = clusters[pos];
-        assert(current.is_valid(pos));
-
-        if (current.has_been_moved()) // cluster has been moved somewhere else, don't process
-            continue;
-
-        for (auto const & similarity_cluster : current.contained_user_bins())
-        {
-            for (size_t const user_bin_idx : similarity_cluster)
-            {
-                ++processed_user_bins;
-                uint64_t const key = lsh_hash_the_sketch(minHash_sketches[user_bin_idx].table[current_sketch_index],
-                                                         current_number_of_sketch_hashes);
-                table[key].push_back(current.id()); // insert representative for all user bins
-            }
         }
     }
     assert(processed_user_bins == clusters.size()); // all user bins should've been processed by one of the clusters
@@ -155,7 +131,7 @@ std::vector<Cluster> initital_LSH_partitioning(std::vector<seqan::hibf::sketch::
     size_t current_max_cluster_size{0};
     size_t current_number_of_sketch_hashes{minHash_sketche_size}; // start with high r but decrease it iteratively
     size_t current_sketch_index{0};
-    size_t current_number_of_clusters{number_of_user_bins}; // initially, each UB is a separate cluster
+    [[maybe_unused]] size_t current_number_of_clusters{number_of_user_bins}; // initially, each UB is a separate cluster
 
     for (size_t pos = 0; pos < number_of_user_bins; ++pos)
     {
@@ -188,6 +164,7 @@ std::vector<Cluster> initital_LSH_partitioning(std::vector<seqan::hibf::sketch::
             // be inserted into multiple splots, and multiple times in the same slot.
             std::sort(list.begin(), list.end());
             auto const end = std::unique(list.begin(), list.end());
+            // Why not erase? `list.erase(end, list.end());`
             auto const begin = list.begin();
 
             if (end - begin <= 1) // nothing to do here
@@ -231,7 +208,7 @@ std::vector<Cluster> initital_LSH_partitioning(std::vector<seqan::hibf::sketch::
                 --current_number_of_clusters;
             }
 
-            current_max_cluster_size = *std::ranges::max_element(current_cluster_cardinality);
+            current_max_cluster_size = std::ranges::max(current_cluster_cardinality);
         }
 
         ++current_sketch_index;
@@ -280,7 +257,7 @@ std::vector<Cluster> very_similar_LSH_partitioning(std::vector<seqan::hibf::sket
     size_t current_max_cluster_size{0};
     size_t current_number_of_sketch_hashes{minHash_sketche_size}; // start with high r but decrease it iteratively
     size_t current_sketch_index{0};
-    size_t current_number_of_clusters{number_of_user_bins}; // initially, each UB is a separate cluster
+    [[maybe_unused]] size_t current_number_of_clusters{number_of_user_bins}; // initially, each UB is a separate cluster
 
     for (size_t pos = 0; pos < number_of_user_bins; ++pos)
     {
@@ -356,7 +333,7 @@ std::vector<Cluster> very_similar_LSH_partitioning(std::vector<seqan::hibf::sket
                 --current_number_of_clusters;
             }
 
-            current_max_cluster_size = *std::ranges::max_element(current_cluster_cardinality);
+            current_max_cluster_size = std::ranges::max(current_cluster_cardinality);
         }
 
         ++current_sketch_index;
@@ -376,32 +353,21 @@ most_distant_LSH_partitioning(std::vector<Cluster> const & initial_clusters,
     assert(!minHash_sketches[0].table.empty());
     assert(!minHash_sketches[0].table[0].empty());
 
-    size_t const number_of_user_bins{initial_clusters.size()};
+    [[maybe_unused]] size_t const number_of_user_bins{initial_clusters.size()};
     size_t const number_of_max_minHash_sketches{minHash_sketches[0].table.size()}; // LSH ADD+OR parameter b
     // size_t const minHash_sketche_size{minHash_sketches[0][0].size()};   // LSH ADD+OR parameter r
 
     size_t current_number_of_sketch_hashes{5};
     size_t current_sketch_index{0};
 
-    size_t current_number_of_clusters = [&initial_clusters]()
-    {
-        size_t number{0};
-        for (auto const & cluster : initial_clusters)
-        {
-            if (cluster.size())
-                ++number;
-        }
-        return number;
-    }();
+    size_t current_number_of_clusters = std::ranges::count_if(initial_clusters,
+                                                              [](auto const & cluster)
+                                                              {
+                                                                  return !cluster.empty();
+                                                              });
 
     std::vector<MultiCluster> clusters;
-    clusters.reserve(number_of_user_bins);
-
-    for (size_t pos = 0; pos < number_of_user_bins; ++pos)
-    {
-        clusters.emplace_back(initial_clusters[pos]);
-        assert(clusters[pos].is_valid(pos));
-    }
+    std::ranges::copy(initial_clusters, std::back_inserter(clusters));
 
     // refine clusters. I want to cluster as much as possible to initialise partitions with very distant clusters
     while (current_number_of_clusters > (config.hibf_config.tmax * 2)
@@ -465,7 +431,8 @@ most_distant_LSH_partitioning(std::vector<Cluster> const & initial_clusters,
 
         ++current_sketch_index;
 
-        if (current_sketch_index % 4 == 0 && current_number_of_sketch_hashes > 1)
+        // ?
+        if (current_number_of_sketch_hashes > 1 && current_sketch_index % 4 == 0)
             --current_number_of_sketch_hashes;
 
         //std::cout << " and after this clustering step there are: " << current_number_of_clusters << std::endl;
@@ -483,23 +450,23 @@ void post_process_clusters(std::vector<Cluster> & clusters,
     // refer to the position of the cluster in the `clusters` vecto anymore but the cluster with the resprive id()
     // would neet to be found
 
-    for (size_t pos = 0; pos < clusters.size(); ++pos)
-    {
-        assert(clusters[pos].is_valid(pos));
-        clusters[pos].sort_by_cardinality(cardinalities);
-    }
+    // Since we do the valid-assert multiple times at different places, it could be a standalone function.
+    std::ranges::for_each(clusters,
+                          [&cardinalities](auto & cluster)
+                          {
+                              cluster.sort_by_cardinality(cardinalities);
+                          });
 
     // push largest p clusters to the front
     auto cluster_size_cmp = [&cardinalities](auto const & v1, auto const & v2)
     {
-        if (v2.size() == v1.size() && !v2.empty())
-            return cardinalities[v2.contained_user_bins()[0]] < cardinalities[v1.contained_user_bins()[0]];
-        return v2.size() < v1.size();
+        if (v1.size() == v2.size() && !v2.empty()) // Note: If v2 is empty, so is v1.
+            return cardinalities[v1.contained_user_bins().front()] > cardinalities[v2.contained_user_bins().front()];
+
+        return v1.size() > v2.size();
     };
-    std::partial_sort(clusters.begin(),
-                      clusters.begin() + config.number_of_partitions,
-                      clusters.end(),
-                      cluster_size_cmp);
+
+    std::ranges::partial_sort(clusters, clusters.begin() + config.number_of_partitions, cluster_size_cmp);
 
     // after filling up the partitions with the biggest clusters, sort the clusters by cardinality of the biggest ub
     // s.t. that euqally sizes ub are assigned after each other and the small stuff is added at last.
@@ -512,21 +479,21 @@ void post_process_clusters(std::vector<Cluster> & clusters,
         if (v2.empty()) // and v1 is not, since the first if would catch
             return true;
 
-        return cardinalities[v2.contained_user_bins()[0]] < cardinalities[v1.contained_user_bins()[0]];
+        return cardinalities[v1.contained_user_bins().front()] > cardinalities[v2.contained_user_bins().front()];
     };
-    std::sort(clusters.begin() + config.number_of_partitions,
-              clusters.end(),
-              compare_cardinality_and_move_empty_clusters_to_the_end);
+    std::ranges::sort(clusters.begin() + config.number_of_partitions,
+                      clusters.end(),
+                      compare_cardinality_and_move_empty_clusters_to_the_end);
 
     assert(clusters[0].size() >= clusters[1].size()); // sanity check
-    assert(cardinalities[clusters[config.number_of_partitions].contained_user_bins()[0]]
-           >= cardinalities[clusters[config.number_of_partitions + 1].contained_user_bins()[0]]); // sanity check
+    assert(cardinalities[clusters[config.number_of_partitions].contained_user_bins().front()]
+           >= cardinalities[clusters[config.number_of_partitions + 1].contained_user_bins().front()]); // sanity check
 
     // debug
     for (size_t cidx = 1; cidx < clusters.size(); ++cidx)
     {
-        if (clusters[cidx - 1].empty()
-            && !clusters[cidx].empty()) // once empty - always empty; all empty clusters should be at the end
+        // once empty - always empty; all empty clusters should be at the end
+        if (clusters[cidx - 1].empty() && !clusters[cidx].empty())
             throw std::runtime_error{"sorting did not work"};
     }
     // debug
@@ -1224,7 +1191,7 @@ void partition_user_bins(chopper::configuration const & config,
     // is lower than the largest single user bin. But of course, we can never reach a smaller max technical bin size
     // then that of the largest user user bin. Thus we can correct the estimate_per_part beforehand.
     // This way we make sure there is at least 1 LSH clustering step.
-    size_t const estimate_per_part =
+    [[maybe_unused]] size_t const estimate_per_part =
         std::max(seqan::hibf::divide_and_ceil(joint_estimate, config.number_of_partitions), max_cardinality + 1);
 
     double const relaxed_fpr_correction = seqan::hibf::layout::compute_relaxed_fpr_correction(
